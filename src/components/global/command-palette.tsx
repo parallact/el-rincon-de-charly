@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Hash,
@@ -46,26 +46,35 @@ interface CommandPaletteProps {
   isMobile?: boolean;
 }
 
+// Client-only mount detection without setState-in-effect. useSyncExternalStore
+// returns the server snapshot (false) during SSR and the client snapshot (true)
+// once hydrated, which keeps Radix UI generated IDs from causing a hydration
+// mismatch. The store never changes after mount, so subscribe is a no-op.
+const emptySubscribe = () => () => {};
+const getMountedSnapshot = () => true;
+const getMountedServerSnapshot = () => false;
+
 export function CommandPalette({ open: controlledOpen, onOpenChange, isMobile = false }: CommandPaletteProps) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
   const router = useRouter();
   const { theme, setTheme } = useTheme();
 
   // Prevent hydration mismatch with Radix UI generated IDs
-  useEffect(() => {
-    setMounted(true); // eslint-disable-line react-hooks/set-state-in-effect -- SSR hydration
-  }, []);
+  const mounted = useSyncExternalStore(emptySubscribe, getMountedSnapshot, getMountedServerSnapshot);
 
   // Use controlled or internal state
   const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const setIsOpen = onOpenChange || setInternalOpen;
 
-  // Keep a ref to avoid stale closures in the keyboard handler
+  // Keep refs to avoid stale closures in the keyboard handler.
+  // Ref writes happen in an effect (not during render) so React's
+  // render-purity rules are respected.
   const isOpenRef = useRef(isOpen);
-  isOpenRef.current = isOpen;
   const setIsOpenRef = useRef(setIsOpen);
-  setIsOpenRef.current = setIsOpen;
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+    setIsOpenRef.current = setIsOpen;
+  }, [isOpen, setIsOpen]);
 
   const runCommand = useCallback((command: () => void) => {
     setIsOpen(false);
