@@ -36,9 +36,12 @@ interface SteerData {
 }
 
 export class PlinkoEngine {
-  private engine: Matter.Engine;
+  // engine/world are created lazily in init() once Matter.js is dynamically
+  // imported; the definite-assignment assertion documents that they are set
+  // before any use rather than masking the type with `any`.
+  private engine!: Matter.Engine;
   private runner: Matter.Runner | null = null;
-  private world: Matter.World;
+  private world!: Matter.World;
   private renderer: PixiRenderer | null = null;
   private renderCallback: (() => void) | null = null;
 
@@ -60,9 +63,7 @@ export class PlinkoEngine {
     this.callbacks = callbacks;
     this.physicsConfig = getPhysicsConfig(rows, typeof window !== 'undefined' ? window.innerWidth : 800);
 
-    // Engine initialization is deferred to init() method
-    this.engine = null as any; // Will be created in init()
-    this.world = null as any; // Will be created in init()
+    // Engine and world are created in init() once Matter.js has loaded.
   }
 
   /**
