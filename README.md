@@ -8,7 +8,8 @@ Plataforma de juegos online multijugador con autenticación, matchmaking en tiem
 
 ### Juegos
 - **Tic Tac Toe** - Con 4 niveles de dificultad de IA (fácil a imposible)
-- Modos: vs IA, local (2 jugadores), online multijugador
+  - Modos: vs IA, local (2 jugadores), online multijugador
+- **Plinko** - Juego de casino: dejá caer la bola y ganá multiplicadores (1 jugador, con apuestas)
 - Más juegos próximamente (Connect 4, Ajedrez, Damas)
 
 ### Multijugador Online
