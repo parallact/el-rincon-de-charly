@@ -2,14 +2,9 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getClient } from '@/lib/supabase/client';
 import type { GameResult, Stats } from '../types';
-import type { InsertTables } from '@/types/supabase.types';
-import { validateGameStatsRow } from '@/lib/validators/database-rows';
+import { getStatsAction, syncStatsAction } from '../actions/stats-actions';
 import { statsLogger } from '@/lib/utils/logger';
-
-// Properly typed insert for game_stats table
-type GameStatsInsert = InsertTables<'game_stats'>;
 
 // Sync configuration
 const SYNC_INTERVAL = 30 * 1000; // 30 seconds
@@ -50,95 +45,31 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Helper to sync stats to Supabase with retry
+// Helper to sync stats to the cloud (Prisma server action) with retry.
 async function syncStatsToSupabase(
-  userId: string,
+  _userId: string,
   stats: Stats,
   retryCount = 0
 ): Promise<boolean> {
-  const supabase = getClient();
-
   try {
-    const upsertData: GameStatsInsert = {
-      user_id: userId,
-      game_type: 'tic-tac-toe',
-      games_played: stats.gamesPlayed,
-      games_won: stats.gamesWon,
-      games_lost: stats.gamesLost,
-      games_draw: stats.gamesDraw,
-      win_streak: stats.winStreak,
-      best_win_streak: stats.bestWinStreak,
-      total_play_time: stats.totalPlayTime,
-      by_opponent: stats.byOpponent,
-      updated_at: new Date().toISOString(),
-    };
-
-    // Type assertion needed due to Supabase SSR client type inference issue
-    // Our GameStatsInsert type matches Database['public']['Tables']['game_stats']['Insert']
-    const { error } = await (supabase
-      .from('game_stats') as ReturnType<typeof supabase.from>)
-      .upsert(upsertData, {
-        onConflict: 'user_id,game_type',
-      });
-
-    if (error) {
-      throw error;
-    }
+    const ok = await syncStatsAction(stats, 'tic-tac-toe');
+    if (!ok) throw new Error('Sync failed');
     return true;
   } catch (err) {
     statsLogger.error(`Error syncing stats (attempt ${retryCount + 1}):`, err);
-
-    // Retry with exponential backoff
     if (retryCount < MAX_RETRY_ATTEMPTS) {
       const backoffDelay = BASE_RETRY_DELAY * Math.pow(2, retryCount);
       await delay(backoffDelay);
-      return syncStatsToSupabase(userId, stats, retryCount + 1);
+      return syncStatsToSupabase(_userId, stats, retryCount + 1);
     }
-
     return false;
   }
 }
 
-// Helper to load stats from Supabase
-async function loadStatsFromSupabase(userId: string): Promise<Stats | null> {
-  const supabase = getClient();
-
+// Helper to load stats from the cloud (Prisma server action).
+async function loadStatsFromSupabase(_userId: string): Promise<Stats | null> {
   try {
-    const { data, error } = await supabase
-      .from('game_stats')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('game_type', 'tic-tac-toe')
-      .single();
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        // No stats found, return null (will use local stats)
-        return null;
-      }
-      statsLogger.error('Error loading stats:', error);
-      return null;
-    }
-
-    if (data) {
-      try {
-        const row = validateGameStatsRow(data, 'loadStatsFromSupabase');
-        return {
-          gamesPlayed: row.games_played,
-          gamesWon: row.games_won,
-          gamesLost: row.games_lost,
-          gamesDraw: row.games_draw,
-          winStreak: row.win_streak,
-          bestWinStreak: row.best_win_streak,
-          totalPlayTime: row.total_play_time,
-          byOpponent: row.by_opponent,
-        };
-      } catch {
-        statsLogger.error('Invalid game stats data received');
-        return null;
-      }
-    }
-    return null;
+    return await getStatsAction('tic-tac-toe');
   } catch (err) {
     statsLogger.error('Error loading stats:', err);
     return null;
