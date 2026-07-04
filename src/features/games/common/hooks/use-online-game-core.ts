@@ -245,21 +245,17 @@ export function useOnlineGameCore({
         // Mark as settled synchronously before awaiting to prevent re-entrancy.
         betSettledForRoomRef.current = updatedRoom.id;
         const walletStore = useWalletStore.getState();
-        const myId = userIdRef.current;
+        const roomId = updatedRoom.id;
 
+        // Settlement is server-authoritative: the RPC reads the finished room's
+        // winner/draw and pays the caller at most once. We no longer compute the
+        // payout (or trust a client amount) here.
         (async () => {
           try {
-            if (updatedRoom.is_draw) {
-              log.log('Draw with bet - refunding:', roomBetAmount);
-              await walletStore.recordWin(roomBetAmount, gameType, 'Reembolso por empate');
-            } else if (updatedRoom.winner_id === myId) {
-              const winnings = roomBetAmount * 2;
-              log.log('Won with bet - receiving:', winnings);
-              await walletStore.recordWin(winnings, gameType, 'Victoria en partida con apuesta');
-            }
+            await walletStore.settleBet(roomId);
           } catch (err) {
-            log.error('Error processing bet result:', err);
-            // Allow a retry on the next finished update if the payout failed.
+            log.error('Error settling bet:', err);
+            // Allow a retry on the next finished update if settlement failed.
             betSettledForRoomRef.current = null;
           }
         })();
@@ -557,14 +553,20 @@ export function useOnlineGameCore({
     const currentStatus = statusRef.current;
     const currentRoom = room;
 
-    // Refund bet if leaving before game started
-    if (currentBetAmount && currentBetAmount > 0 && (currentStatus === 'searching' || currentStatus === 'waiting')) {
+    // Refund bet if leaving an unfinished room. The server validates the stake
+    // from the room metadata and refunds at most once (shares the settlement key).
+    if (
+      currentBetAmount &&
+      currentBetAmount > 0 &&
+      currentRoom &&
+      (currentStatus === 'searching' || currentStatus === 'waiting')
+    ) {
       log.log('Refunding bet on leave:', currentBetAmount);
       const walletStore = useWalletStore.getState();
       try {
-        await walletStore.recordWin(currentBetAmount, gameType, 'Reembolso por cancelar busqueda');
+        await walletStore.cancelBet(currentRoom.id);
       } catch (err) {
-        log.error('Error refunding bet:', err);
+        log.error('Error refunding bet on leave:', err);
       }
     }
 
@@ -601,7 +603,7 @@ export function useOnlineGameCore({
     betDeductedForRoomRef.current = null; // Reset bet tracking
     betSettledForRoomRef.current = null; // Reset settlement tracking
     pollFailureCountRef.current = 0; // Reset poll failure count
-  }, [room, userId, gameType, cleanupSubscription, setStatus]);
+  }, [room, userId, cleanupSubscription, setStatus]);
 
   // Update room (for game-specific updates)
   const updateRoom = useCallback(async (updates: Partial<GameRoom>): Promise<boolean> => {

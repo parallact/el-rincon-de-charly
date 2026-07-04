@@ -61,7 +61,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
   const pendingBetsRef = useRef<Map<string, number>>(new Map());
 
   // Wallet
-  const { wallet, placeBet, recordWin, isLoading: isWalletLoading } = useWalletStore();
+  const { wallet, placeBet, creditWin, isLoading: isWalletLoading } = useWalletStore();
   const balance = wallet?.balance ?? 0;
 
   // Calculate total bet
@@ -99,7 +99,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
       const result = dropBallFn(ballId);
       if (!result) {
         // Refund if drop failed
-        await recordWin(betAmount, 'plinko', 'Reembolso - error al soltar');
+        await creditWin(betAmount, 'plinko', 'Reembolso - error al soltar');
         pendingBetsRef.current.delete(ballId);
         continue; // Try next ball
       }
@@ -111,7 +111,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
     }
 
     return true;
-  }, [betAmount, ballCount, totalBet, balance, rows, placeBet, recordWin]);
+  }, [betAmount, ballCount, totalBet, balance, rows, placeBet, creditWin]);
 
   const onBallLanded = useCallback(async (
     ballId: string,
@@ -138,7 +138,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
 
     // Record win (even if multiplier < 1, we still record the return)
     if (winAmount > 0) {
-      await recordWin(winAmount, 'plinko', `Multiplicador x${multiplier}`);
+      await creditWin(winAmount, 'plinko', `Multiplicador x${multiplier}`);
     }
 
     setCurrentResult(result);
@@ -153,7 +153,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
       // Auto-reset to idle after a short delay
       setTimeout(() => setGameState('idle'), 1000);
     }
-  }, [recordWin, onDropComplete]);
+  }, [creditWin, onDropComplete]);
 
   const reset = useCallback(() => {
     setGameState('idle');

@@ -66,7 +66,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
     loadMoreTransactions,
     isLoadingMore,
     hasMoreTransactions,
-    addCredits,
+    claimDailyBonus,
     error,
   } = useWalletStore();
 
@@ -79,7 +79,9 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const handleAddCredits = async () => {
     setIsAddingCredits(true);
     try {
-      await addCredits(1000, 'Bonificacion diaria');
+      // Server enforces the once-per-24h limit; the button shows the error toast
+      // (e.g. "already claimed") via the store's `error` state if not eligible.
+      await claimDailyBonus();
     } finally {
       setIsAddingCredits(false);
     }
