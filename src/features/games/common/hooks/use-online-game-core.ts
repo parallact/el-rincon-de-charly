@@ -108,6 +108,7 @@ export function useOnlineGameCore({
   const betAmountRef = useRef(betAmount);
   betAmountRef.current = betAmount;
   const betDeductedForRoomRef = useRef<string | null>(null); // Track which room we've deducted bet for
+  const betSettledForRoomRef = useRef<string | null>(null); // Track which room we've paid out/refunded for (prevents double credit)
   const pollFailureCountRef = useRef(0); // Circuit breaker for polling
   const isCleaningUpRef = useRef(false); // Guard against multiple cleanup calls
   const onRoomUpdateRef = useRef(onRoomUpdate);
@@ -235,9 +236,14 @@ export function useOnlineGameCore({
     }
 
     if (updatedRoom.status === 'finished') {
-      // Process bet results
+      // Process bet results — but only once per room. handleRoomUpdate runs on
+      // every room update (realtime + polling fallback), and a finished room is
+      // re-emitted whenever rematch fields change, so without this guard the
+      // winner would be credited multiple times for the same game.
       const roomBetAmount = (updatedRoom.metadata as { bet_amount?: number } | null)?.bet_amount;
-      if (roomBetAmount && roomBetAmount > 0) {
+      if (roomBetAmount && roomBetAmount > 0 && betSettledForRoomRef.current !== updatedRoom.id) {
+        // Mark as settled synchronously before awaiting to prevent re-entrancy.
+        betSettledForRoomRef.current = updatedRoom.id;
         const walletStore = useWalletStore.getState();
         const myId = userIdRef.current;
 
@@ -253,6 +259,8 @@ export function useOnlineGameCore({
             }
           } catch (err) {
             log.error('Error processing bet result:', err);
+            // Allow a retry on the next finished update if the payout failed.
+            betSettledForRoomRef.current = null;
           }
         })();
       }
@@ -591,6 +599,7 @@ export function useOnlineGameCore({
     setRematchStatus('none');
     setBetAmount(null);
     betDeductedForRoomRef.current = null; // Reset bet tracking
+    betSettledForRoomRef.current = null; // Reset settlement tracking
     pollFailureCountRef.current = 0; // Reset poll failure count
   }, [room, userId, gameType, cleanupSubscription, setStatus]);
 
