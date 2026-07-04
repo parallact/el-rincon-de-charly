@@ -1,35 +1,44 @@
 # Migraciones de Supabase
 
-## ⚠️ Falta la migración base (`001_create_game_stats_table.sql`)
+## ⚠️ El proyecto Supabase original es irrecuperable
 
-Las migraciones de este directorio empiezan en `002` y asumen que ya existen
-las tablas base (`profiles`, `game_stats`, `game_rooms`) con sus políticas RLS
-—`002` incluso dice "Run this after 001_create_game_stats_table.sql"—, pero ese
-archivo `001` **no está versionado** en el repo. Se aplicó directo en el editor
-SQL de Supabase.
+El proyecto de Supabase que servía a la app estuvo **pausado más de 90 días y ya
+no se puede restaurar** (su base de datos se perdió). Para volver a levantar el
+backend hay que **crear un proyecto Supabase nuevo y aplicar estas migraciones en
+orden** (`001` → `010`), y setear `NEXT_PUBLIC_SUPABASE_URL` /
+`NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 
-Consecuencia: un setup desde cero con solo estas migraciones **no reproduce** el
-esquema completo. La forma del esquema base puede verse en
-[`src/types/supabase.types.ts`](../../src/types/supabase.types.ts) (tablas
-`profiles`, `game_stats`, `game_rooms`), pero las políticas RLS exactas de esas
-tablas no están capturadas aquí. Pendiente: exportar el esquema base vivo
-(`supabase db dump`) y commitearlo como `001` para dejar las migraciones
-reproducibles.
+## `001_create_base_schema.sql` — reconstruido
 
-## Nota de integridad: wallet y apuestas son autoridad del cliente
+El `001` original nunca se versionó (se aplicó a mano en el editor SQL). Como la
+DB viva ya no existe, **no se pudo exportar el DDL/RLS exacto**; `001` es una
+**reconstrucción best-effort** a partir de
+[`src/types/supabase.types.ts`](../../src/types/supabase.types.ts) y de los
+patrones de query de la app (`profiles`, `game_stats`, `game_rooms` + trigger de
+perfil + RLS). **Revisá las políticas RLS antes de confiar en ellas.** Crea solo
+las columnas previas a `005`/`007` para que esas migraciones sigan aplicando.
 
-El wallet usa **créditos virtuales** (no dinero real). La liquidación de apuestas
-y el balance se manejan del lado del cliente:
+## `010_wallet_server_authoritative.sql` — integridad del wallet
 
-- La política RLS `"Users can update their own wallet"` (`002_create_wallet_tables.sql`)
-  permite `UPDATE` de cualquier columna de la propia fila, incluido `balance`,
-  sin `WITH CHECK` que restrinja el valor nuevo. Un usuario autenticado puede
-  fijar su `balance` a cualquier monto.
-- El store del cliente expone `addCredits()` / `recordWin()`, que escriben el
-  balance directamente; al terminar una partida con apuesta, cada cliente
-  acredita su propio premio. No hay liquidación autoritativa del lado del servidor.
+Antes el balance era **autoridad del cliente**: la RLS `"Users can update their
+own wallet"` permitía fijar el `balance` a cualquier valor, y el cliente
+acreditaba sus propios premios y minteaba un bono diario sin límite. Son créditos
+virtuales, pero la integridad de las apuestas y el leaderboard dependía del
+cliente.
 
-Para integridad real (aunque sea moneda virtual), la dirección correcta es mover
-las mutaciones de balance a funciones `SECURITY DEFINER` que validen la
-transición (apuesta ≤ balance, premio = pozo, un solo pago por partida) y quitar
-la política de `UPDATE` directo sobre `wallets`.
+`010` lo vuelve **autoritativo del servidor**:
+
+- Funciones `SECURITY DEFINER` para todas las mutaciones de balance: `wallet_ensure`,
+  `wallet_place_bet` (valida saldo), `wallet_settle_bet` (**liquida desde el
+  resultado real de la sala**, paga el pozo/ reembolsa empate **una sola vez** por
+  jugador vía la tabla `bet_settlements`), `wallet_cancel_bet`, `wallet_claim_daily_bonus`
+  (límite de 24 h).
+- Quita las políticas de `UPDATE`/`INSERT` directo sobre `wallets` y
+  `wallet_transactions`.
+- El cliente (`wallet-store.ts`) ahora llama a estos RPCs, nunca escribe el balance.
+
+**Limitación conocida (Plinko):** Plinko resuelve el multiplicador con física del
+lado del cliente, así que su premio (`wallet_credit`) sigue siendo **afirmado por
+el cliente**. Está confinado a una función nombrada en vez de un `UPDATE` abierto,
+pero el hardening real de Plinko —RNG del lado del servidor que decide los buckets,
+con el cliente animando hacia ellos— queda como follow-up.
