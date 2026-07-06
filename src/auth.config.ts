@@ -2,6 +2,12 @@ import type { NextAuthConfig } from 'next-auth';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 
+// Only offer Google when it's actually configured, so the UI never shows a
+// "Sign in with Google" button that would fail on an empty client id.
+export const googleEnabled = Boolean(
+  process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+);
+
 // Edge-safe config (no Prisma / bcrypt). The real credentials `authorize`
 // implementation lives in auth.ts (Node runtime).
 export const authConfig = {
@@ -9,10 +15,14 @@ export const authConfig = {
     signIn: '/',
   },
   providers: [
-    Google({
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    }),
+    ...(googleEnabled
+      ? [
+          Google({
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          }),
+        ]
+      : []),
     Credentials({
       name: 'credentials',
       credentials: {
