@@ -1,44 +1,28 @@
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { auth } from '@/auth';
 
 type AuthGuardProps = {
   children: React.ReactNode;
-  /** Where to redirect if auth check fails */
+  /** Where to redirect if the auth check fails */
   redirectTo?: string;
-  /** If true, requires user to be authenticated. If false, requires user to NOT be authenticated */
+  /** If true, requires the user to be authenticated; if false, requires NOT authenticated */
   requireAuth?: boolean;
 };
 
 /**
- * Server component that guards routes based on authentication state.
- * Use in layouts to protect routes or redirect authenticated users.
- *
- * @example
- * // Protected route (requires authentication)
- * <AuthGuard requireAuth redirectTo="/login">
- *   {children}
- * </AuthGuard>
- *
- * @example
- * // Auth route (redirect if already authenticated)
- * <AuthGuard requireAuth={false} redirectTo="/games">
- *   {children}
- * </AuthGuard>
+ * Server component that guards routes based on the NextAuth session.
  */
 export async function AuthGuard({
   children,
-  redirectTo = '/login',
+  redirectTo = '/',
   requireAuth = true,
 }: AuthGuardProps) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  const user = session?.user ?? null;
 
   if (requireAuth && !user) {
     redirect(redirectTo);
   }
-
   if (!requireAuth && user) {
     redirect(redirectTo);
   }

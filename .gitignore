@@ -50,3 +50,6 @@ tmpclaude-*
 .claude/
 
 .vercel
+
+# Prisma generated client
+/src/generated

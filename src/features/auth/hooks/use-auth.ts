@@ -1,307 +1,112 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useMemo } from 'react';
-import { getClient } from '@/lib/supabase/client';
-import { useAuthStore } from '../store/auth-store';
-import { validateProfile } from '@/lib/validators/database-rows';
-import type { Profile } from '../types';
-import { authLogger } from '@/lib/utils/logger';
+import { useCallback, useMemo } from 'react';
+import { useSession, signIn as naSignIn, signOut as naSignOut } from 'next-auth/react';
+import type { AuthUser, Profile } from '../types';
+import { updateProfileAction } from '../actions/profile-actions';
 
+type AuthError = { message: string };
+
+// NextAuth-backed auth hook. Keeps the same shape the app consumed from the
+// previous Supabase implementation so components don't change.
 export function useAuth() {
-  const {
-    user,
-    session,
-    profile,
-    isLoading,
-    isAuthenticated,
-    setUser,
-    setSession,
-    setProfile,
-    setLoading,
-    reset,
-  } = useAuthStore();
+  const { data: session, status } = useSession();
 
-  const supabase = getClient();
-
-  // Track if initial session load is complete to prevent race condition
-  const initialLoadCompleteRef = useRef(false);
-  // Track if we're in the middle of a session refresh (prevents false SIGNED_OUT)
-  const isRefreshingSessionRef = useRef(false);
-  // Track current profile fetch to prevent stale data
-  const currentProfileFetchRef = useRef<string | null>(null);
-
-  // Fetch user profile with proper error handling and race condition prevention
-  const fetchProfile = useCallback(async (userId: string): Promise<Profile | null> => {
-    // Track this fetch to detect if a newer one started
-    const fetchId = userId;
-    currentProfileFetchRef.current = fetchId;
-
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      // If a newer fetch started, discard this result
-      if (currentProfileFetchRef.current !== fetchId) {
-        return null;
+  const user: AuthUser | null = session?.user
+    ? {
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.name,
+        image: session.user.image,
       }
+    : null;
 
-      if (error) {
-        // PGRST116 = no rows found - profile might not exist yet (trigger delay)
-        if (error.code === 'PGRST116') {
-          authLogger.warn('Profile not found for user:', userId);
-          // Retry once after short delay (trigger might be slow)
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const { data: retryData, error: retryError } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .single();
+  const isLoading = status === 'loading';
+  const isAuthenticated = status === 'authenticated' && !!user;
 
-          if (!retryError && retryData && currentProfileFetchRef.current === fetchId) {
-            try {
-              const validatedProfile = validateProfile(retryData, 'fetchProfile retry');
-              setProfile(validatedProfile);
-              return validatedProfile;
-            } catch (validationError) {
-              authLogger.error('Profile validation failed:', validationError);
-              return null;
-            }
-          }
-        }
-        authLogger.error('Error fetching profile:', error);
-        return null;
+  // Profile is derived from the session (username is stored as the user's name).
+  const profile: Profile | null = user
+    ? {
+        id: user.id,
+        username: user.name ?? null,
+        avatar_url: user.image ?? null,
+        games_played: 0,
+        games_won: 0,
+        win_rate: 0,
       }
+    : null;
 
-      try {
-        const validatedProfile = validateProfile(data, 'fetchProfile');
-        setProfile(validatedProfile);
-        return validatedProfile;
-      } catch (validationError) {
-        authLogger.error('Profile validation failed:', validationError);
-        return null;
+  const signIn = useCallback(
+    async (email: string, password: string): Promise<{ error: AuthError | null }> => {
+      const res = await naSignIn('credentials', { email, password, redirect: false });
+      if (!res || res.error) {
+        return { error: { message: 'Email o contraseña inválidos' } };
       }
-    } catch (err) {
-      authLogger.error('Unexpected error fetching profile:', err);
-      return null;
-    }
-  }, [supabase, setProfile]);
+      return { error: null };
+    },
+    []
+  );
 
-  // Sign up with email and verify profile creation
-  const signUp = useCallback(async (email: string, password: string, username: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { username },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+  const signUp = useCallback(
+    async (email: string, password: string, username: string): Promise<{ error: AuthError | null }> => {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, username }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { error: { message: data.error || 'No se pudo crear la cuenta' } };
+      }
+      // Auto sign-in after registration.
+      await naSignIn('credentials', { email, password, redirect: false });
+      return { error: null };
+    },
+    []
+  );
 
-    if (error) {
-      return { error };
-    }
+  const signInWithProvider = useCallback(
+    async (provider: 'google'): Promise<{ error: AuthError | null }> => {
+      await naSignIn(provider, { callbackUrl: '/games' });
+      return { error: null };
+    },
+    []
+  );
 
-    // Check if user already exists (Supabase returns user with empty identities)
-    if (data.user && (!data.user.identities || data.user.identities.length === 0)) {
-      return {
-        error: {
-          message: 'Este email ya esta registrado. Intenta iniciar sesion o usa otro email.'
-        }
-      };
-    }
-
-    return { data, error: null };
-  }, [supabase]);
-
-  // Sign in with email
-  const signIn = useCallback(async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    return { data, error };
-  }, [supabase]);
-
-  // Sign in with Google
-  const signInWithProvider = useCallback(async (provider: 'google') => {
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
-
-    return { data, error };
-  }, [supabase]);
-
-  // Sign out - let onAuthStateChange handle state reset
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    // Don't call reset() here - onAuthStateChange will handle it
-    // This prevents state update after potential unmount
-  }, [supabase]);
+    await naSignOut({ redirect: false });
+  }, []);
 
-  // Update profile
-  const updateProfile = useCallback(async (updates: Partial<Profile>) => {
-    if (!user) {
-      return { error: { message: 'Not authenticated' } };
-    }
+  const updateProfile = useCallback(
+    async (updates: Partial<Profile>): Promise<{ error: AuthError | null }> => {
+      if (!user) return { error: { message: 'Not authenticated' } };
+      const result = await updateProfileAction({
+        username: updates.username ?? undefined,
+        avatarUrl: updates.avatar_url ?? undefined,
+      });
+      return { error: result.error ? { message: result.error } : null };
+    },
+    [user]
+  );
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .update(updates as never)
-      .eq('id', user.id)
-      .select()
-      .single();
+  const fetchProfile = useCallback(async () => profile, [profile]);
 
-    if (!error && data) {
-      try {
-        const validatedProfile = validateProfile(data, 'updateProfile');
-        setProfile(validatedProfile);
-      } catch (validationError) {
-        authLogger.error('Profile validation failed after update:', validationError);
-      }
-    }
-
-    return { data, error };
-  }, [user, supabase, setProfile]);
-
-  // Store ref to fetchProfile to avoid effect dependency changes
-  const fetchProfileRef = useRef(fetchProfile);
-  fetchProfileRef.current = fetchProfile;
-
-  // Initialize auth state - runs once on mount
-  useEffect(() => {
-    let mounted = true;
-
-    // Set up auth state change listener FIRST
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, newSession) => {
-        if (!mounted) return;
-
-        // Skip if initial load hasn't completed yet (avoid race condition)
-        if (!initialLoadCompleteRef.current && event !== 'SIGNED_OUT') {
-          return;
-        }
-
-        // Ignore SIGNED_OUT if we're in the middle of a session refresh
-        // This prevents false logouts during token refresh when opening shared links
-        if (event === 'SIGNED_OUT' && isRefreshingSessionRef.current) {
-          authLogger.debug('[Auth] Ignoring SIGNED_OUT during session refresh');
-          return;
-        }
-
-        // On SIGNED_OUT, clear all state
-        if (event === 'SIGNED_OUT' || !newSession?.user) {
-          reset();
-          setLoading(false);
-          return;
-        }
-
-        // For other events with a valid session
-        setSession(newSession);
-        setUser(newSession.user);
-        setLoading(false);
-
-        // Fetch profile with error handling
-        try {
-          await fetchProfileRef.current(newSession.user.id);
-        } catch (err) {
-          authLogger.error('Error fetching profile in auth listener:', err);
-          // Don't crash the listener, just log
-        }
-      }
-    );
-
-    // Then do initial session check
-    const initSession = async () => {
-      try {
-        // Mark that we're refreshing session to prevent false SIGNED_OUT events
-        isRefreshingSessionRef.current = true;
-
-        // getUser() makes a network request and refreshes the token if expired
-        const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-        // Session refresh complete
-        isRefreshingSessionRef.current = false;
-
-        if (!mounted) return;
-
-        if (userError || !authUser) {
-          // No valid user - ensure clean state
-          reset();
-          setLoading(false);
-          initialLoadCompleteRef.current = true;
-          return;
-        }
-
-        // Get the session
-        const { data: { session: authSession } } = await supabase.auth.getSession();
-
-        if (!mounted) return;
-
-        if (authSession?.user) {
-          setSession(authSession);
-          setUser(authSession.user);
-
-          try {
-            await fetchProfileRef.current(authSession.user.id);
-          } catch (err) {
-            authLogger.error('Error fetching initial profile:', err);
-          }
-        }
-      } catch (error) {
-        authLogger.error('Error initializing session:', error);
-        if (mounted) {
-          reset();
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-          // Mark initial load complete - now listener can handle events
-          initialLoadCompleteRef.current = true;
-        }
-      }
-    };
-
-    initSession();
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, [supabase, setSession, setUser, setProfile, setLoading, reset]);
-
-  // Memoize return value to prevent unnecessary re-renders
-  return useMemo(() => ({
-    user,
-    session,
-    profile,
-    isLoading,
-    isAuthenticated,
-    signUp,
-    signIn,
-    signInWithProvider,
-    signOut,
-    updateProfile,
-    fetchProfile,
-  }), [
-    user,
-    session,
-    profile,
-    isLoading,
-    isAuthenticated,
-    signUp,
-    signIn,
-    signInWithProvider,
-    signOut,
-    updateProfile,
-    fetchProfile,
-  ]);
+  return useMemo(
+    () => ({
+      user,
+      session,
+      profile,
+      isLoading,
+      isAuthenticated,
+      signIn,
+      signUp,
+      signInWithProvider,
+      signOut,
+      updateProfile,
+      fetchProfile,
+    }),
+    [user, session, profile, isLoading, isAuthenticated, signIn, signUp, signInWithProvider, signOut, updateProfile, fetchProfile]
+  );
 }
 
 export default useAuth;
