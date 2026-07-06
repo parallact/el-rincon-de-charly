@@ -24,8 +24,8 @@ interface StatsState {
   recordGame: (result: Omit<GameResult, 'id' | 'createdAt'>) => void;
   resetStats: () => Promise<boolean>;
   setUserId: (userId: string | null) => void;
-  loadFromSupabase: (userId: string) => Promise<void>;
-  syncToSupabase: () => Promise<void>;
+  loadFromCloud: (userId: string) => Promise<void>;
+  syncToCloud: () => Promise<void>;
   startPeriodicSync: () => () => void;
 }
 
@@ -46,7 +46,7 @@ function delay(ms: number): Promise<void> {
 }
 
 // Helper to sync stats to the cloud (Prisma server action) with retry.
-async function syncStatsToSupabase(
+async function syncStatsToCloud(
   _userId: string,
   stats: Stats,
   retryCount = 0
@@ -60,14 +60,14 @@ async function syncStatsToSupabase(
     if (retryCount < MAX_RETRY_ATTEMPTS) {
       const backoffDelay = BASE_RETRY_DELAY * Math.pow(2, retryCount);
       await delay(backoffDelay);
-      return syncStatsToSupabase(_userId, stats, retryCount + 1);
+      return syncStatsToCloud(_userId, stats, retryCount + 1);
     }
     return false;
   }
 }
 
 // Helper to load stats from the cloud (Prisma server action).
-async function loadStatsFromSupabase(_userId: string): Promise<Stats | null> {
+async function loadStatsFromCloud(_userId: string): Promise<Stats | null> {
   try {
     return await getStatsAction('tic-tac-toe');
   } catch (err) {
@@ -90,7 +90,7 @@ export const useStatsStore = create<StatsState>()(
       setUserId: (userId) => {
         set({ userId });
         if (userId) {
-          get().loadFromSupabase(userId);
+          get().loadFromCloud(userId);
         }
       },
 
@@ -98,7 +98,7 @@ export const useStatsStore = create<StatsState>()(
         const intervalId = setInterval(() => {
           const { userId, hasPendingChanges, isSyncing } = get();
           if (userId && hasPendingChanges && !isSyncing) {
-            get().syncToSupabase();
+            get().syncToCloud();
           }
         }, SYNC_INTERVAL);
 
@@ -106,9 +106,9 @@ export const useStatsStore = create<StatsState>()(
         return () => clearInterval(intervalId);
       },
 
-      loadFromSupabase: async (userId) => {
+      loadFromCloud: async (userId) => {
         set({ isSyncing: true });
-        const cloudStats = await loadStatsFromSupabase(userId);
+        const cloudStats = await loadStatsFromCloud(userId);
 
         if (cloudStats) {
           const localStats = get().stats;
@@ -117,25 +117,25 @@ export const useStatsStore = create<StatsState>()(
             set({ stats: cloudStats, isSyncing: false });
           } else {
             // Local has more games, sync to cloud
-            await syncStatsToSupabase(userId, localStats);
+            await syncStatsToCloud(userId, localStats);
             set({ isSyncing: false });
           }
         } else {
           // No cloud stats, sync local to cloud if we have any
           const localStats = get().stats;
           if (localStats.gamesPlayed > 0) {
-            await syncStatsToSupabase(userId, localStats);
+            await syncStatsToCloud(userId, localStats);
           }
           set({ isSyncing: false });
         }
       },
 
-      syncToSupabase: async () => {
+      syncToCloud: async () => {
         const { userId, stats, isSyncing } = get();
         if (!userId || isSyncing) return;
 
         set({ isSyncing: true });
-        const success = await syncStatsToSupabase(userId, stats);
+        const success = await syncStatsToCloud(userId, stats);
 
         set({
           isSyncing: false,
@@ -199,10 +199,10 @@ export const useStatsStore = create<StatsState>()(
           return { stats: newStats, recentGames, hasPendingChanges: true };
         });
 
-        // Sync to Supabase using captured stats (not get() which could have changed)
+        // Sync to the cloud using captured stats (not get() which could have changed)
         const { userId } = get();
         if (userId && newStatsForSync) {
-          syncStatsToSupabase(userId, newStatsForSync);
+          syncStatsToCloud(userId, newStatsForSync);
         }
       },
 
@@ -214,14 +214,14 @@ export const useStatsStore = create<StatsState>()(
 
         set({ isResetting: true, stats: initialStats, recentGames: [], hasPendingChanges: false });
 
-        // Also reset in Supabase
+        // Also reset in the cloud
         if (userId) {
           try {
-            const success = await syncStatsToSupabase(userId, initialStats);
+            const success = await syncStatsToCloud(userId, initialStats);
             set({ isResetting: false });
             return success;
           } catch (err) {
-            statsLogger.error('Error resetting stats in Supabase:', err);
+            statsLogger.error('Error resetting stats in the cloud:', err);
             set({ isResetting: false });
             return false;
           }
@@ -292,8 +292,8 @@ export const useStatsActions = () => useStatsStore((state) => ({
   recordGame: state.recordGame,
   resetStats: state.resetStats,
   setUserId: state.setUserId,
-  loadFromSupabase: state.loadFromSupabase,
-  syncToSupabase: state.syncToSupabase,
+  loadFromCloud: state.loadFromCloud,
+  syncToCloud: state.syncToCloud,
   startPeriodicSync: state.startPeriodicSync,
 }));
 
