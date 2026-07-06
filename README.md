@@ -15,7 +15,7 @@ Plataforma de juegos online multijugador con autenticación, matchmaking en tiem
 ### Multijugador Online
 - Matchmaking automático
 - Salas privadas con link de invitación
-- Realtime con WebSocket (Supabase)
+- Realtime con WebSocket (Ably)
 - Reconexión automática
 - Sistema de revancha
 
@@ -37,7 +37,8 @@ Plataforma de juegos online multijugador con autenticación, matchmaking en tiem
 |-----------|------------|
 | Framework | Next.js 16, React 19, TypeScript |
 | Styling | Tailwind CSS 4, Radix UI |
-| Backend | Supabase (PostgreSQL, Auth, Realtime) |
+| Backend | PostgreSQL (Neon) + Prisma, NextAuth v5 |
+| Realtime | Ably (WebSocket) |
 | State | Zustand |
 | Animations | Framer Motion |
 
@@ -49,7 +50,7 @@ npm install
 
 # Variables de entorno
 cp .env.example .env.local
-# Configurar SUPABASE_URL y SUPABASE_ANON_KEY
+# Configurar DATABASE_URL, AUTH_SECRET, AUTH_URL y ABLY_API_KEY (ver .env.example)
 
 # Iniciar servidor de desarrollo
 npm run dev
@@ -66,7 +67,8 @@ src/
 ├── lib/           # Utilidades y configuración
 └── types/         # Tipos TypeScript
 
-supabase/
+prisma/
+├── schema.prisma  # Modelo de datos (Prisma + PostgreSQL)
 └── migrations/    # Migraciones SQL
 ```
 
