@@ -73,6 +73,8 @@ model User {
   wallet         Wallet?
   roomsAsPlayer1 GameRoom[]  @relation("Player1")
   roomsAsPlayer2 GameRoom[]  @relation("Player2")
+  plinkoSeed     PlinkoSeed?
+  plinkoRounds   PlinkoRound[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -165,4 +167,44 @@ model BetSettlement {
   createdAt DateTime @default(now())
 
   @@id([roomId, userId])
+}
+
+// ============================================
+// Plinko provably-fair (single-player)
+// ============================================
+
+// The active commit-reveal seed pair for a user. Each Plinko drop derives its
+// path from HMAC-SHA256(serverSeed, `${clientSeed}:${nonce}`); the server only
+// exposes serverSeedHash (a commitment) until the seed is rotated and revealed,
+// letting the player verify past rounds. `nonce` increments once per drop.
+model PlinkoSeed {
+  userId         String   @id
+  serverSeed     String   // secret until rotated/revealed
+  serverSeedHash String   // SHA-256(serverSeed), shown to the player up front
+  clientSeed     String
+  nonce          Int      @default(0)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// One recorded Plinko drop. The outcome (path/slot/multiplier/winAmount) is
+// derived server-side; the row keeps the commitment + inputs so the player can
+// verify it after the seed is revealed.
+model PlinkoRound {
+  id             String   @id @default(cuid())
+  userId         String
+  betAmount      Decimal  @db.Decimal(15, 2)
+  rows           Int
+  serverSeedHash String
+  clientSeed     String
+  nonce          Int
+  path           String   // e.g. "0110..." (0=left, 1=right), one char per row
+  slot           Int
+  multiplier     Decimal  @db.Decimal(10, 4)
+  winAmount      Decimal  @db.Decimal(15, 2)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@index([userId])
 }

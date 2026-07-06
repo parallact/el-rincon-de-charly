@@ -10,6 +10,7 @@ import type { RowCount, DropResult, BallDirection, BallSpeed } from '../../types
 import type { BallCount } from '../../hooks/use-plinko-game';
 import { PlinkoCanvas } from '../plinko-canvas';
 import { BetControls } from '../bet-controls';
+import { FairnessPanel } from '../fairness-panel';
 import { usePlinkoPhysics } from '../../hooks';
 
 interface GameScreenProps {
@@ -27,7 +28,7 @@ interface GameScreenProps {
   onSpeedChange: (speed: BallSpeed) => void;
   onBetChange: (amount: number) => void;
   onBallCountChange: (count: BallCount) => void;
-  onDrop: (dropFn: (id: string) => { path: BallDirection[]; finalSlot: number } | null) => Promise<boolean>;
+  onDrop: (dropFn: (id: string, path?: BallDirection[]) => { path: BallDirection[]; finalSlot: number } | null) => Promise<boolean>;
   onBallLanded: (ballId: string, slotIndex: number, multiplier: number) => Promise<void>;
   onBack: () => void;
 }
@@ -143,7 +144,7 @@ export function GameScreen({
       {/* Main content */}
       <div className="flex-1 flex flex-col lg:flex-row gap-2 sm:gap-4 lg:gap-5 min-h-0">
         {/* Controls - Left on desktop, bottom on mobile */}
-        <div className="w-full lg:w-[280px] xl:w-[300px] shrink-0 order-2 lg:order-1">
+        <div className="w-full lg:w-[280px] xl:w-[300px] shrink-0 order-2 lg:order-1 flex flex-col gap-2 sm:gap-3">
           <div className="bg-(--color-surface) rounded-xl sm:rounded-2xl border border-(--color-border) p-3 sm:p-4 lg:p-5">
             <BetControls
               betAmount={betAmount}
@@ -160,6 +161,7 @@ export function GameScreen({
               onDrop={handleDrop}
             />
           </div>
+          {isAuthenticated && <FairnessPanel />}
         </div>
 
         {/* Game area - Right on desktop, top on mobile */}

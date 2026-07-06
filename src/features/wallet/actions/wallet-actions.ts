@@ -240,16 +240,6 @@ export async function claimDailyBonusAction(): Promise<WalletResult> {
   return { wallet: updated, error: null };
 }
 
-// Single-player win credit (Plinko). NOTE: amount is client-asserted — see the
-// wallet integrity note; provably-fair Plinko is a separate follow-up.
-export async function creditWinAction(
-  amount: number,
-  gameSlug: string,
-  description?: string
-): Promise<WalletResult> {
-  const userId = await getUserId();
-  if (!userId) return { wallet: null, error: 'No autenticado' };
-  if (!(amount > 0)) return { wallet: null, error: 'Monto inválido' };
-  const wallet = await credit(userId, amount, 'win', description ?? 'Ganancia', gameSlug);
-  return { wallet, error: null };
-}
+// NOTE: single-player Plinko wins are settled atomically and server-side by
+// dropPlinkoBallAction (provably fair). There is deliberately no generic
+// "credit an arbitrary win" action — that would let a client assert any payout.

@@ -10,7 +10,6 @@ import {
   settleBetAction,
   cancelBetAction,
   claimDailyBonusAction,
-  creditWinAction,
   type WalletDTO,
   type WalletTransactionDTO,
 } from '../actions/wallet-actions';
@@ -30,7 +29,9 @@ interface WalletState {
   settleBet: (roomId: string) => Promise<boolean>;
   cancelBet: (roomId: string) => Promise<boolean>;
   claimDailyBonus: () => Promise<boolean>;
-  creditWin: (amount: number, gameSlug: string, description?: string) => Promise<boolean>;
+  // Replace the wallet from a server-authoritative DTO (e.g. after a Plinko drop
+  // that already debited the bet and credited the win in one atomic action).
+  setWallet: (dto: WalletDTO) => void;
   reset: () => void;
 }
 
@@ -197,16 +198,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       return false;
     }),
 
-  creditWin: (amount, gameSlug, description) =>
-    withWalletLock(async () => {
-      const { wallet, error } = await creditWinAction(amount, gameSlug, description);
-      if (wallet) {
-        set({ wallet: dtoToWallet(wallet), error: null });
-        return true;
-      }
-      set({ error: error ?? 'Error al registrar la ganancia' });
-      return false;
-    }),
+  setWallet: (dto) => set({ wallet: dtoToWallet(dto), error: null }),
 
   reset: () => {
     set({
@@ -234,7 +226,7 @@ export const useWalletActions = () =>
     settleBet: state.settleBet,
     cancelBet: state.cancelBet,
     claimDailyBonus: state.claimDailyBonus,
-    creditWin: state.creditWin,
+    setWallet: state.setWallet,
     reset: state.reset,
   }));
 
