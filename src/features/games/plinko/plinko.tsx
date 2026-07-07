@@ -80,6 +80,7 @@ export function Plinko({ onBack = () => {} }: PlinkoProps) {
       currentResult={game.currentResult}
       history={game.history}
       totalProfit={game.totalProfit}
+      dropsCount={game.dropsCount}
       isAuthenticated={isAuthenticated}
       onRowsChange={game.setRows}
       onSpeedChange={game.setSpeed}

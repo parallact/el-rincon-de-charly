@@ -45,18 +45,21 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function FairnessPanel() {
+// `refreshKey` bumps once per settled drop so the displayed nonce ("Próxima
+// tirada") stays current while the panel is open.
+export function FairnessPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [open, setOpen] = useState(false);
   const [fairness, setFairness] = useState<PlinkoFairness | null>(null);
   const [revealed, setRevealed] = useState<PlinkoRotateResult['revealed']>(null);
   const [rotating, setRotating] = useState(false);
 
+  // Refetch the commitment whenever the panel opens or a drop advances the nonce.
   useEffect(() => {
-    if (!open || fairness) return;
+    if (!open) return;
     getPlinkoFairnessAction()
       .then((f) => f && setFairness(f))
       .catch(() => gameLogger.warn('[Plinko] no se pudo cargar la información de fairness'));
-  }, [open, fairness]);
+  }, [open, refreshKey]);
 
   async function rotate() {
     setRotating(true);
