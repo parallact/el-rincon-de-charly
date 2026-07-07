@@ -42,6 +42,8 @@ interface UsePlinkoGameReturn {
 
   // Derived
   totalBet: number;
+  // Monotonic count of settled drops — used to refresh the fairness display.
+  dropsCount: number;
 
   // Actions
   setRows: (rows: RowCount) => void;
@@ -65,6 +67,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
   const [currentResult, setCurrentResult] = useState<DropResult | null>(null);
   const [history, setHistory] = useState<DropResult[]>([]);
   const [totalProfit, setTotalProfit] = useState<number>(0);
+  const [dropsCount, setDropsCount] = useState<number>(0);
 
   // Track in-flight balls and their server-decided outcomes.
   const pendingBetsRef = useRef<Map<string, PendingBall>>(new Map());
@@ -133,6 +136,8 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
 
       // Authoritative balance (bet already debited + win credited).
       setWallet(res.wallet);
+      // The server advanced the nonce for this drop; signal the fairness panel.
+      setDropsCount((c) => c + 1);
 
       const ballId = `${res.nonce}-${i}-${Math.random().toString(36).slice(2, 8)}`;
       pendingBetsRef.current.set(ballId, {
@@ -212,6 +217,7 @@ export function usePlinkoGame(options: UsePlinkoGameOptions = {}): UsePlinkoGame
 
     // Derived
     totalBet,
+    dropsCount,
 
     // Actions
     setRows: handleSetRows,

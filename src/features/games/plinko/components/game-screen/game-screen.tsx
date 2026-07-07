@@ -23,6 +23,7 @@ interface GameScreenProps {
   currentResult: DropResult | null;
   history: DropResult[];
   totalProfit: number;
+  dropsCount: number;
   isAuthenticated: boolean;
   onRowsChange: (rows: RowCount) => void;
   onSpeedChange: (speed: BallSpeed) => void;
@@ -43,6 +44,7 @@ export function GameScreen({
   currentResult: _currentResult, // Reserved for future use
   history,
   totalProfit: _totalProfit, // Reserved for future use
+  dropsCount,
   isAuthenticated,
   onRowsChange,
   onSpeedChange,
@@ -161,7 +163,7 @@ export function GameScreen({
               onDrop={handleDrop}
             />
           </div>
-          {isAuthenticated && <FairnessPanel />}
+          {isAuthenticated && <FairnessPanel refreshKey={dropsCount} />}
         </div>
 
         {/* Game area - Right on desktop, top on mobile */}
