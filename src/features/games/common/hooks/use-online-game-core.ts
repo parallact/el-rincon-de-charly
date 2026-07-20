@@ -189,30 +189,15 @@ export function useOnlineGameCore({
         deadline: metadata.negotiation_deadline ?? null,
       });
 
-      // Handle bet deduction when agreement is reached
+      // Stake handling when agreement is reached. The stake is debited
+      // server-side (both players, atomically) at the moment the room enters
+      // 'agreed', so the client no longer debits here — it just reflects the
+      // agreed amount and refreshes the (now server-debited) balance once.
       if (negotiationState === 'agreed' && metadata.bet_amount && metadata.bet_amount > 0) {
-        const roomId = updatedRoom.id;
-        // Only deduct if we haven't already deducted for this room
-        if (betDeductedForRoomRef.current !== roomId) {
-          const walletStore = useWalletStore.getState();
-          const balance = walletStore.wallet?.balance ?? 0;
-
-          if (metadata.bet_amount <= balance) {
-            log.log('Agreement detected - deducting bet:', metadata.bet_amount);
-            walletStore.placeBet(metadata.bet_amount, gameType, 'Apuesta acordada').then(success => {
-              if (success) {
-                betDeductedForRoomRef.current = roomId;
-                setBetAmount(metadata.bet_amount!);
-              } else {
-                log.error('Failed to deduct bet after agreement');
-              }
-            });
-          } else {
-            log.error('Insufficient balance for agreed bet');
-          }
-        } else {
-          // Already deducted, just update the display amount
-          setBetAmount(metadata.bet_amount);
+        setBetAmount(metadata.bet_amount);
+        if (betDeductedForRoomRef.current !== updatedRoom.id) {
+          betDeductedForRoomRef.current = updatedRoom.id;
+          useWalletStore.getState().refreshWallet();
         }
       }
 
@@ -279,7 +264,7 @@ export function useOnlineGameCore({
       // Notify game finished
       onGameFinishedRef.current?.(updatedRoom);
     }
-  }, [gameType, setStatus]);
+  }, [setStatus]);
 
   // Handle rematch room transition
   const handleRematchAccepted = useCallback(async (newRoomId: string) => {
@@ -440,14 +425,13 @@ export function useOnlineGameCore({
       const negotiationState = metadata?.negotiation_state;
 
       if (negotiationState === 'agreed' && metadata?.bet_amount) {
-        // Both players agreed on same amount - deduct bet now
-        const betSuccess = await walletStore.placeBet(metadata.bet_amount, gameType, 'Apuesta acordada');
-        if (!betSuccess) {
-          // Can't afford - skip betting
-          await gameRoomService.skipBetting(newRoom.id, userId);
-        } else {
-          setBetAmount(metadata.bet_amount);
-        }
+        // Both players agreed on the same amount — the server already debited both
+        // stakes atomically when it set 'agreed'. Reflect the amount and refresh
+        // the (now server-debited) balance. If a player couldn't cover it the
+        // server would have returned 'no_bet' instead, so 'agreed' is trustworthy.
+        betDeductedForRoomRef.current = newRoom.id;
+        setBetAmount(metadata.bet_amount);
+        walletStore.refreshWallet();
       } else if (negotiationState === 'pending') {
         // Need to negotiate - don't deduct yet
         log.log('Entering negotiation phase');
@@ -700,24 +684,22 @@ export function useOnlineGameCore({
       if (updatedRoom) {
         const metadata = updatedRoom.metadata as GameRoomMetadata | null;
         if (metadata?.negotiation_state === 'agreed') {
-          // Deduct bet now that agreement is reached
-          const betSuccess = await walletStore.placeBet(amount, gameType, 'Apuesta acordada');
-          if (betSuccess) {
-            betDeductedForRoomRef.current = room.id; // Mark as deducted
-            setBetAmount(amount);
-            setStatus('playing');
-          } else {
-            // If bet fails, skip betting
-            await gameRoomService.skipBetting(room.id, userId);
-            setStatus('playing');
-          }
+          // Agreement reached — the server already debited both stakes atomically.
+          betDeductedForRoomRef.current = room.id;
+          setBetAmount(amount);
+          setStatus('playing');
+          walletStore.refreshWallet();
+        } else if (metadata?.negotiation_state === 'no_bet') {
+          // Server declined the bet (a player couldn't cover it) — play unstaked.
+          setBetAmount(null);
+          setStatus('playing');
         }
       }
     } catch (err) {
       log.error('Error submitting bet proposal:', err);
       setError('Error al enviar propuesta');
     }
-  }, [room, status, userId, gameType, setStatus]);
+  }, [room, status, userId, setStatus]);
 
   // Accept opponent's bet proposal
   const acceptBetProposal = useCallback(async () => {
@@ -740,15 +722,16 @@ export function useOnlineGameCore({
       const updatedRoom = await gameRoomService.acceptBetProposal(room.id, userId);
 
       if (updatedRoom) {
-        // Deduct bet
-        const betSuccess = await walletStore.placeBet(amount, gameType, 'Apuesta aceptada');
-        if (betSuccess) {
-          betDeductedForRoomRef.current = room.id; // Mark as deducted
+        const state = (updatedRoom.metadata as GameRoomMetadata | null)?.negotiation_state;
+        if (state === 'agreed') {
+          // The server debited both stakes atomically when it set 'agreed'.
+          betDeductedForRoomRef.current = room.id;
           setBetAmount(amount);
           setStatus('playing');
+          walletStore.refreshWallet();
         } else {
-          // If bet fails, skip betting
-          await gameRoomService.skipBetting(room.id, userId);
+          // Server declined the bet (a player couldn't cover it) — play unstaked.
+          setBetAmount(null);
           setStatus('playing');
         }
       }
@@ -756,7 +739,7 @@ export function useOnlineGameCore({
       log.error('Error accepting bet proposal:', err);
       setError('Error al aceptar propuesta');
     }
-  }, [room, status, userId, gameType, negotiation.opponentProposal, setStatus]);
+  }, [room, status, userId, negotiation.opponentProposal, setStatus]);
 
   // Skip betting and start game without bet
   const skipBetting = useCallback(async () => {

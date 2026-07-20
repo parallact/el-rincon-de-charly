@@ -6,7 +6,6 @@ import { walletLogger } from '@/lib/utils/logger';
 import {
   ensureWalletAction,
   getTransactionsAction,
-  placeBetAction,
   settleBetAction,
   cancelBetAction,
   claimDailyBonusAction,
@@ -25,7 +24,10 @@ interface WalletState {
   loadWallet: (userId: string) => Promise<void>;
   loadTransactions: (limit?: number) => Promise<void>;
   loadMoreTransactions: (limit?: number) => Promise<void>;
-  placeBet: (amount: number, gameSlug: string, description?: string) => Promise<boolean>;
+  // Force-refresh the balance from the server (e.g. after a PvP stake was debited
+  // server-side at bet agreement). Unlike loadWallet, it bypasses the "already
+  // loaded" guard so a stale local balance gets replaced.
+  refreshWallet: () => Promise<void>;
   settleBet: (roomId: string) => Promise<boolean>;
   cancelBet: (roomId: string) => Promise<boolean>;
   claimDailyBonus: () => Promise<boolean>;
@@ -153,17 +155,14 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     }
   },
 
-  placeBet: (amount, gameSlug, description) =>
-    withWalletLock(async () => {
-      set({ error: null });
-      const { wallet, error } = await placeBetAction(amount, gameSlug, description);
-      if (wallet) {
-        set({ wallet: dtoToWallet(wallet) });
-        return true;
-      }
-      set({ error: error ?? 'Error al realizar la apuesta' });
-      return false;
-    }),
+  refreshWallet: async () => {
+    try {
+      const dto = await ensureWalletAction();
+      if (dto) set({ wallet: dtoToWallet(dto) });
+    } catch (err) {
+      walletLogger.error('Error refreshing wallet:', err);
+    }
+  },
 
   settleBet: (roomId) =>
     withWalletLock(async () => {
@@ -222,7 +221,7 @@ export const useWalletActions = () =>
     loadWallet: state.loadWallet,
     loadTransactions: state.loadTransactions,
     loadMoreTransactions: state.loadMoreTransactions,
-    placeBet: state.placeBet,
+    refreshWallet: state.refreshWallet,
     settleBet: state.settleBet,
     cancelBet: state.cancelBet,
     claimDailyBonus: state.claimDailyBonus,
