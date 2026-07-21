@@ -169,6 +169,34 @@ model BetSettlement {
   @@id([roomId, userId])
 }
 
+// Server-authoritative stake ledger for PvP bets. When both players commit to an
+// agreed amount, each player's stake is debited and recorded here IN THE SAME
+// transaction that flips the room to agreed/playing. settleBetAction computes the
+// payout from the SUM of these rows (never from client-supplied metadata), so a
+// client cannot mint money by skipping its own debit. One stake per (room, player).
+model BetStake {
+  roomId    String
+  userId    String
+  amount    Decimal  @db.Decimal(15, 2)
+  settled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@id([roomId, userId])
+  @@index([roomId])
+}
+
+// Idempotency ledger for the daily bonus: at most one claim per user per AR-local
+// day. The unique (userId, bonusDate) id turns the check-then-act race into a
+// single atomic insert — a duplicate claim hits the primary-key constraint and
+// aborts the crediting transaction.
+model DailyBonus {
+  userId    String
+  bonusDate String   // AR-local calendar day, "YYYY-MM-DD"
+  createdAt DateTime @default(now())
+
+  @@id([userId, bonusDate])
+}
+
 // ============================================
 // Plinko provably-fair (single-player)
 // ============================================

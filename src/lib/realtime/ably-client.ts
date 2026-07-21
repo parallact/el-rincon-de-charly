@@ -21,3 +21,23 @@ export function getAblyClient(): Ably.Realtime | null {
   }
   return client;
 }
+
+// The room the connection is currently authorized for, so we don't re-authorize
+// (and churn the connection) when re-subscribing to the same room.
+let authorizedRoomId: string | null = null;
+
+// Re-authorize the connection with a token scoped to a single room. The auth
+// endpoint only grants `room:<roomId>` when the caller is a participant (or the
+// room is a public waiting room), so a client can never subscribe to a room it is
+// not part of. Best-effort: on failure the caller's polling fallback covers gaps.
+export function authorizeForRoom(roomId: string): void {
+  const c = getAblyClient();
+  if (!c || authorizedRoomId === roomId) return;
+  authorizedRoomId = roomId;
+  c.auth
+    .authorize({}, { authUrl: '/api/ably/auth', authParams: { roomId } })
+    .catch(() => {
+      // Allow a later retry to re-authorize for this room.
+      if (authorizedRoomId === roomId) authorizedRoomId = null;
+    });
+}

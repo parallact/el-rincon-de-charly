@@ -1,7 +1,7 @@
 'use client';
 
 import type * as AblyTypes from 'ably';
-import { getAblyClient } from '@/lib/realtime/ably-client';
+import { getAblyClient, authorizeForRoom } from '@/lib/realtime/ably-client';
 import {
   getRoomAction,
   findAvailableRoomsAction,
@@ -213,6 +213,11 @@ class GameRoomService {
       onStatusChange?.('disconnected');
       return () => {};
     }
+
+    // Scope the connection's token to this room before attaching. The auth
+    // endpoint only grants access when the caller is a participant (or the room
+    // is a public waiting room), so watching an unrelated room is impossible.
+    authorizeForRoom(roomId);
 
     const channel = client.channels.get(`room:${roomId}`);
 

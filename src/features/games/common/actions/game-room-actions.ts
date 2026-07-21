@@ -4,6 +4,7 @@ import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import { publishRoom } from '@/lib/realtime/ably-server';
+import { debitAgreedStakes } from '@/features/wallet/actions/stake-helpers';
 
 // Serializable room shape returned to the client — mirrors the legacy Supabase
 // GameRoom (snake_case) so the client service and consumers stay unchanged.
@@ -237,21 +238,32 @@ export async function leaveRoomAction(roomId: string): Promise<boolean> {
 
 // Find a joinable public waiting room (locked, skip-locked) or create a new one.
 // Replaces the find_or_create_match SECURITY DEFINER function.
+//
+// `onJoin` runs inside the same transaction that holds the room lock and receives
+// the transaction client plus the candidate's id and player1Id, so bet paths can
+// atomically debit both players' stakes before flipping the room to agreed/playing.
 async function matchmake(
   userId: string,
   gameType: string,
   createMetadata: Prisma.InputJsonValue | undefined,
-  onJoin: (roomMeta: Record<string, unknown> | null) => { metadata: Prisma.InputJsonValue; status: 'playing' | 'waiting' } | null
+  onJoin: (
+    tx: Prisma.TransactionClient,
+    candidate: { id: string; player1Id: string | null; metadata: Record<string, unknown> | null }
+  ) => Promise<{ metadata: Prisma.InputJsonValue; status: 'playing' | 'waiting' } | null>
 ): Promise<GameRoomDTO | null> {
   const joinedId = await prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown }>>`
-      SELECT "id","metadata" FROM "GameRoom"
+    const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown; player1_id: string | null }>>`
+      SELECT "id","metadata","player1Id" as player1_id FROM "GameRoom"
       WHERE "gameType" = ${gameType} AND "status" = 'waiting' AND "isPrivate" = false
         AND "player2Id" IS NULL AND ("player1Id" IS NULL OR "player1Id" <> ${userId})
       ORDER BY "createdAt" ASC LIMIT 1 FOR UPDATE SKIP LOCKED`;
     const candidate = rows[0];
     if (!candidate) return null;
-    const decision = onJoin((candidate.metadata as Record<string, unknown> | null) ?? null);
+    const decision = await onJoin(tx, {
+      id: candidate.id,
+      player1Id: candidate.player1_id,
+      metadata: (candidate.metadata as Record<string, unknown> | null) ?? null,
+    });
     if (!decision) return null;
     await tx.gameRoom.update({
       where: { id: candidate.id },
@@ -280,7 +292,7 @@ async function matchmake(
 export async function findOrCreateMatchAction(gameType = 'tic-tac-toe'): Promise<GameRoomDTO | null> {
   const userId = await requireUserId();
   if (!userId) return null;
-  return matchmake(userId, gameType, undefined, () => ({ metadata: {} as Prisma.InputJsonValue, status: 'playing' }));
+  return matchmake(userId, gameType, undefined, async () => ({ metadata: {} as Prisma.InputJsonValue, status: 'playing' }));
 }
 
 // Bet-negotiation matchmaking (replaces find_or_create_match_v2).
@@ -297,7 +309,8 @@ export async function findOrCreateMatchV2Action(
     player1_bet_proposal: wantsBet ? betAmount : null,
   } as unknown as Prisma.InputJsonValue;
 
-  return matchmake(userId, gameType, createMeta, (roomMeta) => {
+  return matchmake(userId, gameType, createMeta, async (tx, candidate) => {
+    const roomMeta = candidate.metadata;
     const p1Proposal = Number(roomMeta?.player1_bet_proposal ?? 0);
     const p1WantsBet = p1Proposal > 0;
     let negotiationState: string;
@@ -307,8 +320,15 @@ export async function findOrCreateMatchV2Action(
     if (!p1WantsBet && !wantsBet) {
       negotiationState = 'none';
     } else if (p1WantsBet && wantsBet && p1Proposal === betAmount) {
-      negotiationState = 'agreed';
-      finalBet = betAmount;
+      // Both committed to the same amount — debit both stakes atomically now.
+      // If either can't cover it, fall back to no_bet rather than entering agreed.
+      const staked = await debitAgreedStakes(tx, candidate.id, candidate.player1Id, userId, betAmount!, gameType);
+      if (staked) {
+        negotiationState = 'agreed';
+        finalBet = betAmount;
+      } else {
+        negotiationState = 'no_bet';
+      }
     } else if (p1WantsBet && wantsBet) {
       negotiationState = 'pending';
       status = 'waiting';
@@ -356,8 +376,8 @@ export async function joinRoomWithBetPreferenceAction(
   if (!roomId) return { room: null, error: 'ID de sala no válido' };
 
   const joined = await prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown; player1_id: string | null; status: string; player2_id: string | null }>>`
-      SELECT "id","metadata","player1Id" as player1_id,"status","player2Id" as player2_id
+    const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown; player1_id: string | null; status: string; player2_id: string | null; game_type: string }>>`
+      SELECT "id","metadata","player1Id" as player1_id,"status","player2Id" as player2_id,"gameType" as game_type
         FROM "GameRoom" WHERE "id" = ${roomId} FOR UPDATE`;
     const room = rows[0];
     if (!room) return { error: 'Sala no encontrada' as string };
@@ -372,7 +392,12 @@ export async function joinRoomWithBetPreferenceAction(
     let finalBet: number | null = null;
     let status: 'playing' | 'waiting' = 'playing';
     if (!p1WantsBet && !wantsBet) negotiationState = 'none';
-    else if (p1WantsBet && wantsBet && p1Proposal === betAmount) { negotiationState = 'agreed'; finalBet = betAmount; }
+    else if (p1WantsBet && wantsBet && p1Proposal === betAmount) {
+      // Debit both stakes atomically; fall back to no_bet if either can't cover.
+      const staked = await debitAgreedStakes(tx, roomId, room.player1_id, userId, betAmount!, room.game_type);
+      if (staked) { negotiationState = 'agreed'; finalBet = betAmount; }
+      else negotiationState = 'no_bet';
+    }
     else if (p1WantsBet && wantsBet) { negotiationState = 'pending'; status = 'waiting'; }
     else negotiationState = 'no_bet';
     const deadline = negotiationState === 'pending' ? new Date(Date.now() + 30000).toISOString() : null;
@@ -394,8 +419,8 @@ export async function joinRoomWithBetPreferenceAction(
 // ---------------------------------------------------------------- bet negotiation
 
 async function loadParticipantRoom(tx: Prisma.TransactionClient, roomId: string, userId: string) {
-  const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown; player1_id: string | null; player2_id: string | null }>>`
-    SELECT "id","metadata","player1Id" as player1_id,"player2Id" as player2_id
+  const rows = await tx.$queryRaw<Array<{ id: string; metadata: unknown; player1_id: string | null; player2_id: string | null; game_type: string }>>`
+    SELECT "id","metadata","player1Id" as player1_id,"player2Id" as player2_id,"gameType" as game_type
       FROM "GameRoom" WHERE "id" = ${roomId} FOR UPDATE`;
   const room = rows[0];
   if (!room) throw new Error('Room not found');
@@ -415,7 +440,12 @@ export async function submitBetProposalAction(roomId: string, amount: number): P
     let newMeta: Record<string, unknown>;
     let status: 'playing' | 'waiting' = 'waiting';
     if (amount === otherProposal) {
-      newMeta = { ...meta, negotiation_state: 'agreed', bet_amount: amount, [myKey]: amount };
+      // Agreement reached — debit both stakes atomically. If either player can't
+      // cover it, start the game with no bet rather than crediting phantom money.
+      const staked = await debitAgreedStakes(tx, room.id, room.player1_id, room.player2_id, amount, room.game_type);
+      newMeta = staked
+        ? { ...meta, negotiation_state: 'agreed', bet_amount: amount, [myKey]: amount }
+        : { ...meta, negotiation_state: 'no_bet', bet_amount: null, [myKey]: amount };
       status = 'playing';
     } else {
       newMeta = { ...meta, [myKey]: amount, negotiation_deadline: new Date(Date.now() + 30000).toISOString() };
@@ -434,7 +464,12 @@ export async function acceptBetProposalAction(roomId: string): Promise<GameRoomD
     const otherProposal = Number(isPlayer1 ? meta.player2_bet_proposal : meta.player1_bet_proposal) || null;
     if (!otherProposal || otherProposal <= 0) throw new Error('No valid proposal to accept');
     const myKey = isPlayer1 ? 'player1_bet_proposal' : 'player2_bet_proposal';
-    const newMeta = { ...meta, negotiation_state: 'agreed', bet_amount: otherProposal, [myKey]: otherProposal };
+    // Accepting reaches agreement — debit both stakes atomically. Fall back to
+    // no_bet if either player can't cover it.
+    const staked = await debitAgreedStakes(tx, room.id, room.player1_id, room.player2_id, otherProposal, room.game_type);
+    const newMeta = staked
+      ? { ...meta, negotiation_state: 'agreed', bet_amount: otherProposal, [myKey]: otherProposal }
+      : { ...meta, negotiation_state: 'no_bet', bet_amount: null, [myKey]: otherProposal };
     await tx.gameRoom.update({ where: { id: room.id }, data: { metadata: newMeta as Prisma.InputJsonValue, status: 'playing', updatedAt: new Date() } });
   });
   return fetchAndPublish(roomId);
